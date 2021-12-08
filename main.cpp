@@ -20,6 +20,11 @@
 #define NODES_NUM 5
 #define MSG_SIZE_BYTE 10 * 1024 * 1024 // 10MiB
 
+std::string SEND_START  = "send_start";
+std::string SEND_END = "send_end";
+std::string RECV_START = "recv_start";
+std::string RECV_END = "recv_end";
+
 void write_message(int *to, int *from, unsigned int num) {
   for (int i = 0; i < num; i++) to[i] = from[i];
 }
@@ -28,10 +33,16 @@ void read_message(int *to, int *from, unsigned int num) {
   for (int i = 0; i < num; i++) to[i] = from[i];
 }
 
+void timestamp(std::ofstream &f0, int iteration, int node, std::string &pos) {
+  using namespace std::chrono;
+  unsigned long long realtime = duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+  f0 << iteration << " " << node << " " << pos << " " << realtime << std::endl;
+}
+
 void child_func(int node_idx);
-void start_node();
-void end_node();
-void middle_node(int node_idx);
+void start_node(std::ofstream &f0);
+void end_node(std::ofstream &f0);
+void middle_node(std::ofstream &f0, int node_idx);
 
 pid_t pids[NODES_NUM];
 int* shmems[NODES_NUM - 1];
@@ -100,12 +111,16 @@ void child_func(int node_idx) {
     }
   }
 
-  if (node_idx == 0) start_node();
-  else if (node_idx == NODES_NUM - 1) end_node();
-  else middle_node(node_idx);
+  std::ofstream f0(("./log/" + std::to_string(node_idx) + ".log").c_str(), std::ios::app);
+
+  if (node_idx == 0) start_node(f0);
+  else if (node_idx == NODES_NUM - 1) end_node(f0);
+  else middle_node(f0, node_idx);
+
+  f0.close();
 }
 
-void start_node() {
+void start_node(std::ofstream &logf) {
   sem_t *sem_pub = sem_open((SEM_PREFIX + std::to_string(0)).c_str(), O_RDWR);
   if (sem_pub == SEM_FAILED) {
     perror("sem_open error at start_node");
@@ -117,8 +132,10 @@ void start_node() {
 
   for (int i = 0; i < ITERATION; i++) {
     usleep(PERIOD_MS * 1000);
-    printf("---- %d th iteration starts at start node ---- \n", i);
+
+    timestamp(logf, i, 0, SEND_START);
     write_message(shmems[0], data, MSG_SIZE_BYTE / sizeof(int));
+    timestamp(logf, i, 0, SEND_END);
 
     if (sem_post(sem_pub) < 0) {
       perror("sem_post error");
@@ -132,7 +149,7 @@ void start_node() {
   }
 }
 
-void middle_node(int node_idx) {
+void middle_node(std::ofstream &logf, int node_idx) {
   sem_t *sem_pub = sem_open((SEM_PREFIX + std::to_string(node_idx)).c_str(), O_RDWR);
   sem_t *sem_sub = sem_open((SEM_PREFIX + std::to_string(node_idx - 1)).c_str(), O_RDWR);
   if (sem_pub == SEM_FAILED || sem_sub == SEM_FAILED) {
@@ -148,15 +165,18 @@ void middle_node(int node_idx) {
       exit(EXIT_FAILURE);
     }
 
-    printf("node idx %d, %d th iteration\n", node_idx, i);
-
+    timestamp(logf, i, node_idx, RECV_START);
     read_message(buffer, shmems[node_idx - 1], MSG_SIZE_BYTE / sizeof(int));
+    timestamp(logf, i, node_idx, RECV_END);
 
     /* Process Data  */
     for (int i = 0; i < MSG_SIZE_BYTE / sizeof(int); i++) buffer[i] *= 2;
     /* To here */
 
+    timestamp(logf, i, node_idx, SEND_START);
     write_message(shmems[node_idx], buffer, MSG_SIZE_BYTE / sizeof(int));
+    timestamp(logf, i, node_idx, SEND_END);
+
     if (sem_post(sem_pub) < 0) {
       perror("sem_post error");
       exit(EXIT_FAILURE);
@@ -169,7 +189,7 @@ void middle_node(int node_idx) {
   }
 }
 
-void end_node() {
+void end_node(std::ofstream &logf) {
   sem_t *sem_sub = sem_open((SEM_PREFIX + std::to_string(NODES_NUM - 2)).c_str(), O_RDWR);
   if (sem_sub == SEM_FAILED) {
     perror("sem_open error at end_node");
@@ -184,8 +204,9 @@ void end_node() {
       exit(EXIT_FAILURE);
     }
 
+    timestamp(logf, i, NODES_NUM - 1, RECV_START);
     read_message(buffer, shmems[NODES_NUM - 2], MSG_SIZE_BYTE / sizeof(int));
-    printf("%d th iteration ends at end node\n", i);
+    timestamp(logf, i, NODES_NUM - 1, RECV_END);
   }
 
   if (sem_close(sem_sub) < 0) {
