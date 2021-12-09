@@ -1,8 +1,8 @@
 .PHONY: all
-all: main
+all: shmem_madvise
 
-main: main.cpp
-	g++ main.cpp -o main -lpthread
+shmem_madvise: shmem_madvise.cpp
+	g++ shmem_madvise.cpp -o shmem_madvise -lpthread
 
 .PHONY: clean
-	rm main
+	rm shmem_madvise
