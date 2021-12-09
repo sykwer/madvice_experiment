@@ -15,9 +15,9 @@
 #define SEM_PREFIX "/my_semaphore"
 #define SEM_PERMS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
 
-#define ITERATION 10
-#define PERIOD_MS 100
-#define NODES_NUM 5
+#define ITERATION 20
+#define PERIOD_MS 300
+#define NODES_NUM 60
 #define MSG_SIZE_BYTE 10 * 1024 * 1024 // 10MiB
 
 std::string SEND_START  = "send_start";
@@ -48,7 +48,14 @@ pid_t pids[NODES_NUM];
 int* shmems[NODES_NUM - 1];
 sem_t* sems[NODES_NUM - 1];
 
-int main() {
+std::string madvise_flag = "";
+
+int main(int argc, char** argv) {
+  if (argc >= 2) {
+    if (std::string("dontneed").compare(argv[1]) == 0) madvise_flag = "dontneed";
+    else if (std::string("free").compare(argv[1]) == 0) madvise_flag = "free";
+  }
+
   for (int i = 0; i < NODES_NUM - 1; i++) {
     shmems[i] = (int *)mmap(NULL, MSG_SIZE_BYTE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (shmems[i] == MAP_FAILED) {
@@ -169,6 +176,18 @@ void middle_node(std::ofstream &logf, int node_idx) {
     read_message(buffer, shmems[node_idx - 1], MSG_SIZE_BYTE / sizeof(int));
     timestamp(logf, i, node_idx, RECV_END);
 
+    if (madvise_flag == "dontneed") {
+      if (madvise(shmems[node_idx - 1], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
+        perror("madvise dontneed error");
+        exit(EXIT_FAILURE);
+      }
+    } else if (madvise_flag == "free") {
+      if (madvise(shmems[node_idx - 1], MSG_SIZE_BYTE, MADV_FREE) < 0) {
+        perror("madvise free error");
+        exit(EXIT_FAILURE);
+      }
+    }
+
     /* Process Data  */
     for (int i = 0; i < MSG_SIZE_BYTE / sizeof(int); i++) buffer[i] *= 2;
     /* To here */
@@ -207,6 +226,18 @@ void end_node(std::ofstream &logf) {
     timestamp(logf, i, NODES_NUM - 1, RECV_START);
     read_message(buffer, shmems[NODES_NUM - 2], MSG_SIZE_BYTE / sizeof(int));
     timestamp(logf, i, NODES_NUM - 1, RECV_END);
+
+    if (madvise_flag == "dontneed") {
+      if (madvise(shmems[NODES_NUM - 2], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
+        perror("madvise dontneed error");
+        exit(EXIT_FAILURE);
+      }
+    } else if (madvise_flag == "free") {
+      if (madvise(shmems[NODES_NUM - 2], MSG_SIZE_BYTE, MADV_FREE) < 0) {
+        perror("madvise free error");
+        exit(EXIT_FAILURE);
+      }
+    }
   }
 
   if (sem_close(sem_sub) < 0) {
