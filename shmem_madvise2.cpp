@@ -16,8 +16,8 @@
 #define SEM_PERMS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
 
 #define ITERATION 20
-#define PERIOD_MS 300
-#define NODES_NUM 60
+#define PERIOD_MS 500
+#define NODES_NUM 1000
 #define MSG_SIZE_BYTE 10 * 1024 * 1024 // 10MiB
 
 std::string SEND_START  = "send_start";
@@ -92,13 +92,6 @@ int main(int argc, char** argv) {
   }
 
   for (int i = 0; i < NODES_NUM; i++) {
-    if (munmap(shmems[i], MSG_SIZE_BYTE) < 0) {
-      perror("munmap error");
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  for (int i = 0; i < NODES_NUM; i++) {
     if (waitpid(pids[i], NULL, 0) < 0) {
       perror("waitpid error");
       exit(EXIT_FAILURE);
@@ -148,14 +141,8 @@ void start_node(std::ofstream &logf) {
     usleep(PERIOD_MS * 1000);
 
     timestamp(logf, i, 0, SEND_START);
+    mlock(shmems[0], MSG_SIZE_BYTE);
     write_message(shmems[0], data, MSG_SIZE_BYTE / sizeof(int));
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[0], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    }
-
     timestamp(logf, i, 0, SEND_END);
 
     if (sem_post(sem_pub) < 0) {
@@ -178,17 +165,17 @@ void middle_node(std::ofstream &logf, int node_idx) {
     exit(EXIT_FAILURE);
   }
 
-  int* buffer = (int *)mmap(NULL, MSG_SIZE_BYTE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
   for (int i = 0; i < ITERATION; i++) {
     if (sem_wait(sem_sub) < 0) {
       perror("sem_wait error");
       exit(EXIT_FAILURE);
     }
 
-    timestamp(logf, i, node_idx, RECV_START);
-    read_message(buffer, shmems[node_idx - 1], MSG_SIZE_BYTE / sizeof(int));
-    timestamp(logf, i, node_idx, RECV_END);
+    timestamp(logf, i, node_idx, SEND_START);
+    mlock(shmems[node_idx], MSG_SIZE_BYTE);
+    write_message(shmems[node_idx], shmems[node_idx - 1], MSG_SIZE_BYTE / sizeof(int));
+    munlock(shmems[node_idx - 1], MSG_SIZE_BYTE);
+    timestamp(logf, i, node_idx, SEND_END);
 
     if (madvise_flag == "dontneed") {
       if (madvise(shmems[node_idx - 1], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
@@ -201,20 +188,6 @@ void middle_node(std::ofstream &logf, int node_idx) {
         exit(EXIT_FAILURE);
       }
     }
-
-    /* Process Data  */
-    for (int i = 0; i < MSG_SIZE_BYTE / sizeof(int); i++) buffer[i] *= 2;
-    /* To here */
-
-    timestamp(logf, i, node_idx, SEND_START);
-    write_message(shmems[node_idx], buffer, MSG_SIZE_BYTE / sizeof(int));
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[node_idx], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    }
-    timestamp(logf, i, node_idx, SEND_END);
 
     if (sem_post(sem_pub) < 0) {
       perror("sem_post error");
@@ -245,6 +218,7 @@ void end_node(std::ofstream &logf) {
 
     timestamp(logf, i, NODES_NUM - 1, RECV_START);
     read_message(buffer, shmems[NODES_NUM - 2], MSG_SIZE_BYTE / sizeof(int));
+    munlock(shmems[NODES_NUM - 2], MSG_SIZE_BYTE);
     timestamp(logf, i, NODES_NUM - 1, RECV_END);
 
     if (madvise_flag == "dontneed") {

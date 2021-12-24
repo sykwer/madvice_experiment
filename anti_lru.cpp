@@ -15,15 +15,17 @@
 #define SEM_PREFIX "/my_semaphore"
 #define SEM_PERMS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
 
-#define ITERATION 20
-#define PERIOD_MS 300
-#define NODES_NUM 60
-#define MSG_SIZE_BYTE 10 * 1024 * 1024 // 10MiB
+#define ITERATION 100
+#define PERIOD_MS 200
+#define NODES_NUM 100
+#define MSG_SIZE_BYTE 11 * 1024 * 1024 // 11MiB
 
 std::string SEND_START  = "send_start";
 std::string SEND_END = "send_end";
 std::string RECV_START = "recv_start";
 std::string RECV_END = "recv_end";
+
+#define MADV_COLD 20
 
 void write_message(int *to, int *from, unsigned int num) {
   for (int i = 0; i < num; i++) to[i] = from[i];
@@ -52,12 +54,11 @@ std::string madvise_flag = "";
 
 int main(int argc, char** argv) {
   if (argc >= 2) {
-    if (std::string("dontneed").compare(argv[1]) == 0) madvise_flag = "dontneed";
-    else if (std::string("free").compare(argv[1]) == 0) madvise_flag = "free";
+    if (std::string("cold").compare(argv[1]) == 0) madvise_flag = "cold";
   }
 
   for (int i = 0; i < NODES_NUM - 1; i++) {
-    shmems[i] = (int *)mmap(NULL, MSG_SIZE_BYTE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    shmems[i] = (int *)mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (shmems[i] == MAP_FAILED) {
       perror("mmap error");
       exit(EXIT_FAILURE);
@@ -92,13 +93,6 @@ int main(int argc, char** argv) {
   }
 
   for (int i = 0; i < NODES_NUM; i++) {
-    if (munmap(shmems[i], MSG_SIZE_BYTE) < 0) {
-      perror("munmap error");
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  for (int i = 0; i < NODES_NUM; i++) {
     if (waitpid(pids[i], NULL, 0) < 0) {
       perror("waitpid error");
       exit(EXIT_FAILURE);
@@ -119,7 +113,7 @@ void child_func(int node_idx) {
   for (int i = 0; i < NODES_NUM - 1; i++) {
     if (i == node_idx - 1 || i == node_idx) continue;
 
-    if (munmap(shmems[i], MSG_SIZE_BYTE) < 0) {
+    if (munmap(shmems[i], sizeof(int)) < 0) {
       perror("munmap error");
       exit(EXIT_FAILURE);
     }
@@ -148,19 +142,19 @@ void start_node(std::ofstream &logf) {
     usleep(PERIOD_MS * 1000);
 
     timestamp(logf, i, 0, SEND_START);
-    write_message(shmems[0], data, MSG_SIZE_BYTE / sizeof(int));
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[0], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    }
-
+    write_message(shmems[0], data, 1);
     timestamp(logf, i, 0, SEND_END);
 
     if (sem_post(sem_pub) < 0) {
       perror("sem_post error");
       exit(EXIT_FAILURE);
+    }
+
+    if (madvise_flag.compare("cold") == 0) {
+      if (madvise(data, MSG_SIZE_BYTE, MADV_COLD) < 0) {
+        perror("madvise cold error");
+        exit(EXIT_FAILURE);
+      }
     }
   }
 
@@ -187,38 +181,27 @@ void middle_node(std::ofstream &logf, int node_idx) {
     }
 
     timestamp(logf, i, node_idx, RECV_START);
-    read_message(buffer, shmems[node_idx - 1], MSG_SIZE_BYTE / sizeof(int));
+    read_message(buffer, shmems[node_idx - 1], 1);
     timestamp(logf, i, node_idx, RECV_END);
-
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[node_idx - 1], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    } else if (madvise_flag == "free") {
-      if (madvise(shmems[node_idx - 1], MSG_SIZE_BYTE, MADV_FREE) < 0) {
-        perror("madvise free error");
-        exit(EXIT_FAILURE);
-      }
-    }
 
     /* Process Data  */
     for (int i = 0; i < MSG_SIZE_BYTE / sizeof(int); i++) buffer[i] *= 2;
     /* To here */
 
     timestamp(logf, i, node_idx, SEND_START);
-    write_message(shmems[node_idx], buffer, MSG_SIZE_BYTE / sizeof(int));
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[node_idx], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    }
+    write_message(shmems[node_idx], buffer, 1);
     timestamp(logf, i, node_idx, SEND_END);
 
     if (sem_post(sem_pub) < 0) {
       perror("sem_post error");
       exit(EXIT_FAILURE);
+    }
+
+    if (madvise_flag.compare("cold") == 0) {
+      if (madvise(buffer, MSG_SIZE_BYTE, MADV_COLD) < 0) {
+        perror("madvise cold error");
+        exit(EXIT_FAILURE);
+      }
     }
   }
 
@@ -244,17 +227,12 @@ void end_node(std::ofstream &logf) {
     }
 
     timestamp(logf, i, NODES_NUM - 1, RECV_START);
-    read_message(buffer, shmems[NODES_NUM - 2], MSG_SIZE_BYTE / sizeof(int));
+    read_message(buffer, shmems[NODES_NUM - 2], 1);
     timestamp(logf, i, NODES_NUM - 1, RECV_END);
 
-    if (madvise_flag == "dontneed") {
-      if (madvise(shmems[NODES_NUM - 2], MSG_SIZE_BYTE, MADV_DONTNEED) < 0) {
-        perror("madvise dontneed error");
-        exit(EXIT_FAILURE);
-      }
-    } else if (madvise_flag == "free") {
-      if (madvise(shmems[NODES_NUM - 2], MSG_SIZE_BYTE, MADV_FREE) < 0) {
-        perror("madvise free error");
+     if (madvise_flag.compare("cold") == 0) {
+      if (madvise(buffer, MSG_SIZE_BYTE, MADV_COLD) < 0) {
+        perror("madvise cold error");
         exit(EXIT_FAILURE);
       }
     }

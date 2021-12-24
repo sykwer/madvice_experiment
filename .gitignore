@@ -1,2 +1,6 @@
 main
+anti_lru
+shmem_madvise
+shmem_madvise2
+tmp/
 log/
